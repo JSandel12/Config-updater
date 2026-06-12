@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 
 export async function updateHapp(workingLinks) {
     if (workingLinks.length === 0) {
@@ -19,7 +20,11 @@ export async function updateHapp(workingLinks) {
     // Upload to Supabase
     if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.log('Uploading working links to Supabase...');
-        const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+        const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+            global: {
+                WebSocket: WebSocket
+            }
+        });
         
         try {
             // First clear the table
