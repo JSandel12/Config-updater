@@ -9,7 +9,7 @@ export async function updateHapp(workingLinks) {
         return;
     }
     
-    const rawLinks = workingLinks.join('\n');
+    const rawLinks = workingLinks.map(obj => typeof obj === 'string' ? obj : obj.link).join('\n');
     const base64Sub = Buffer.from(rawLinks).toString('base64');
     
     const outputPath = path.join(process.cwd(), 'sub.txt');
@@ -20,9 +20,19 @@ export async function updateHapp(workingLinks) {
     // Upload to Supabase
     if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.log('Uploading working links to Supabase...');
+        
+        // Custom fetch with 15-second timeout to prevent Termux hanging
+        const customFetch = (url, options) => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            return fetch(url, { ...options, signal: controller.signal })
+                .finally(() => clearTimeout(timeoutId));
+        };
+
         const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
             global: {
-                WebSocket: WebSocket
+                WebSocket: WebSocket,
+                fetch: customFetch
             }
         });
         
@@ -39,7 +49,10 @@ export async function updateHapp(workingLinks) {
             }
             
             // Insert new links
-            const rows = workingLinks.map(link => ({ link }));
+            const rows = workingLinks.map(item => {
+                if (typeof item === 'string') return { link: item };
+                return { link: item.link, latency: item.latency, remark: item.remark };
+            });
             const { error: insertError } = await supabase
                 .from('working_links')
                 .insert(rows);
