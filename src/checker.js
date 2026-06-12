@@ -101,7 +101,23 @@ export async function checkLinks(links) {
             const configPath = path.join(os.tmpdir(), `xray-${localPort}-${i}.json`);
             fs.writeFileSync(configPath, JSON.stringify(config));
             
-            const xrayProc = spawn(xrayExe, ['run', '-c', configPath], { stdio: 'ignore' });
+            let xrayErrorLogged = false;
+            const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
+            
+            xrayProc.on('error', (err) => { 
+                if (i === 0) console.log(`[DEBUG] Xray spawn error:`, err.message); 
+            });
+            xrayProc.stderr.on('data', (data) => {
+                if (i === 0 && !xrayErrorLogged) {
+                    console.log(`[DEBUG] Xray stderr:`, data.toString());
+                    xrayErrorLogged = true;
+                }
+            });
+            xrayProc.on('exit', (code) => { 
+                if (code !== null && code !== 0 && i === 0) {
+                    console.log(`[DEBUG] Xray exited prematurely with code:`, code); 
+                }
+            });
             
             // Wait for xray to bind the local port
             await new Promise(r => setTimeout(r, 1500));
@@ -117,12 +133,18 @@ export async function checkLinks(links) {
                 });
                 if (res.status === 204) {
                     const latency = Date.now() - startTime;
-                    const remarkText = parsed.remark || 'Unknown Server';
-                    console.log(`\x1b[32m[${i + 1}/${linksToTest.length}] OK\x1b[0m (${latency}ms) - ${remarkText}`);
-                    workingLinks.push({ link, latency, remark: remarkText });
+                    if (latency <= 1000) {
+                        const remarkText = parsed.remark || 'Unknown Server';
+                        console.log(`\x1b[32m[${i + 1}/${linksToTest.length}] OK\x1b[0m (${latency}ms) - ${remarkText}`);
+                        workingLinks.push({ link, latency, remark: remarkText });
+                    }
+                } else if (i === 0) {
+                    console.log(`[DEBUG] Axios returned status: ${res.status}`);
                 }
             } catch (err) {
-                // Silently ignore failures to keep console clean
+                if (i === 0) {
+                    console.log(`[DEBUG] Axios connection error: ${err.message}`);
+                }
             }
             
             xrayProc.kill('SIGTERM');
