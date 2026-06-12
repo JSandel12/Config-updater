@@ -42,7 +42,7 @@ export async function ensureXray() {
         if (isWindows) {
             downloadUrl = 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip';
         } else if (os.arch() === 'arm64' || os.arch() === 'aarch64') {
-            downloadUrl = 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip';
+            downloadUrl = 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-android-arm64-v8a.zip';
         }
             
         fetchUrl(downloadUrl);
