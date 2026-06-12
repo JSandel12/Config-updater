@@ -86,7 +86,8 @@ export async function checkLinks(links) {
     const limit = process.env.TEST_LIMIT ? parseInt(process.env.TEST_LIMIT) : links.length;
     const linksToTest = links.slice(0, limit);
 
-    const CONCURRENCY = 50;
+    const isAndroid = os.arch() === 'arm64' || os.arch() === 'aarch64' || os.platform() === 'android';
+    const CONCURRENCY = isAndroid ? 20 : 50;
     console.log(`Testing ${linksToTest.length} links concurrently (up to ${CONCURRENCY} at a time)...`);
     
     let completed = 0;
