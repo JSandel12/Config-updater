@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
 
 import axios from 'axios';
+import https from 'https';
 
 export async function updateHapp(workingLinks) {
     if (workingLinks.length === 0) {
@@ -31,9 +32,14 @@ export async function updateHapp(workingLinks) {
             'Content-Type': 'application/json'
         };
         
+        // Force IPv4 to completely bypass Termux IPv6 DNS hanging issues
+        const httpsAgent = new https.Agent({ family: 4 });
+        
         try {
+            console.log(`[DEBUG] Attempting to clear old links from Supabase (${url})...`);
             // First clear the table (Delete all rows where id is greater than 0, or just not null)
-            await axios.delete(`${url}/rest/v1/working_links?id=gt.0`, { headers, timeout: 15000 });
+            const deleteRes = await axios.delete(`${url}/rest/v1/working_links?id=gt.0`, { headers, timeout: 15000, httpsAgent });
+            console.log(`[DEBUG] Delete successful. Status: ${deleteRes.status}`);
             
             // Insert new links
             const rows = workingLinks.map(item => {
@@ -41,11 +47,27 @@ export async function updateHapp(workingLinks) {
                 return { link: item.link, latency: item.latency, remark: item.remark };
             });
             
-            await axios.post(`${url}/rest/v1/working_links`, rows, { headers, timeout: 15000 });
+            console.log(`[DEBUG] Attempting to insert ${rows.length} new links...`);
+            const postRes = await axios.post(`${url}/rest/v1/working_links`, rows, { headers, timeout: 15000, httpsAgent });
+            console.log(`[DEBUG] Insert successful. Status: ${postRes.status}`);
                 
             console.log('Successfully updated Supabase with the latest working links!');
         } catch (err) {
-            console.error('Failed to update Supabase:', err.response?.data || err.message);
+            console.error('\n======================================');
+            console.error('FAILED TO UPDATE SUPABASE');
+            if (err.response) {
+                console.error('Supabase returned an error:');
+                console.error(`Status: ${err.response.status}`);
+                console.error(`Data: ${JSON.stringify(err.response.data, null, 2)}`);
+            } else if (err.request) {
+                console.error('No response received from Supabase. The connection timed out or was blocked.');
+                console.error(`Error message: ${err.message}`);
+                console.error(`Code: ${err.code}`);
+            } else {
+                console.error('An unexpected error occurred:');
+                console.error(err.message);
+            }
+            console.error('======================================\n');
         }
     } else {
         console.log('Skipping Supabase upload. SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not found in .env');
