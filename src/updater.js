@@ -47,9 +47,19 @@ export async function updateHapp(workingLinks) {
                 return { link: item.link, latency: item.latency, remark: item.remark };
             });
             
-            console.log(`[DEBUG] Attempting to insert ${rows.length} new links...`);
-            const postRes = await axios.post(`${url}/rest/v1/working_links`, rows, { headers, timeout: 15000, httpsAgent });
-            console.log(`[DEBUG] Insert successful. Status: ${postRes.status}`);
+            console.log(`[DEBUG] Attempting to insert ${rows.length} new links in smaller chunks...`);
+            
+            // Chunk the rows into batches of 5 to avoid MTU/PMTUD fragmentation drops on LTE
+            const chunkSize = 5;
+            for (let i = 0; i < rows.length; i += chunkSize) {
+                const chunk = rows.slice(i, i + chunkSize);
+                console.log(`[DEBUG] Inserting chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(rows.length/chunkSize)}...`);
+                const postRes = await axios.post(`${url}/rest/v1/working_links`, chunk, { headers, timeout: 15000, httpsAgent });
+                if (postRes.status !== 201 && postRes.status !== 200) {
+                     throw new Error(`Unexpected status ${postRes.status} on chunk insert`);
+                }
+            }
+            console.log(`[DEBUG] All chunks inserted successfully.`);
                 
             console.log('Successfully updated Supabase with the latest working links!');
         } catch (err) {
