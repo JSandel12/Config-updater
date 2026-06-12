@@ -3,6 +3,8 @@ import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
 
+import axios from 'axios';
+
 export async function updateHapp(workingLinks) {
     if (workingLinks.length === 0) {
         console.log('No working links found. Nothing to update.');
@@ -17,54 +19,33 @@ export async function updateHapp(workingLinks) {
     
     console.log(`Saved ${workingLinks.length} working links to ${outputPath} (Base64 subscription format).`);
     
-    // Upload to Supabase
+    // Upload to Supabase using Axios (Bypasses Termux native fetch DNS bug)
     if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-        console.log('Uploading working links to Supabase...');
+        console.log('Uploading working links to Supabase via Axios...');
+        const url = process.env.SUPABASE_URL;
+        const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
         
-        // Custom fetch with 15-second timeout to prevent Termux hanging
-        const customFetch = (url, options) => {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
-            return fetch(url, { ...options, signal: controller.signal })
-                .finally(() => clearTimeout(timeoutId));
+        const headers = {
+            'apikey': key,
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json'
         };
-
-        const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-            global: {
-                WebSocket: WebSocket,
-                fetch: customFetch
-            }
-        });
         
         try {
-            // First clear the table
-            const { error: deleteError } = await supabase
-                .from('working_links')
-                .delete()
-                .neq('id', 0); // Delete all rows (id > 0 or anything)
-                
-            if (deleteError) {
-                 console.error('Failed to delete old links:', deleteError);
-                 throw deleteError;
-            }
+            // First clear the table (Delete all rows where id is greater than 0, or just not null)
+            await axios.delete(`${url}/rest/v1/working_links?id=gt.0`, { headers, timeout: 15000 });
             
             // Insert new links
             const rows = workingLinks.map(item => {
                 if (typeof item === 'string') return { link: item };
                 return { link: item.link, latency: item.latency, remark: item.remark };
             });
-            const { error: insertError } = await supabase
-                .from('working_links')
-                .insert(rows);
-                
-            if (insertError) {
-                 console.error('Failed to insert new links:', insertError);
-                 throw insertError;
-            }
             
+            await axios.post(`${url}/rest/v1/working_links`, rows, { headers, timeout: 15000 });
+                
             console.log('Successfully updated Supabase with the latest working links!');
         } catch (err) {
-            console.error('Failed to update Supabase:', err.message);
+            console.error('Failed to update Supabase:', err.response?.data || err.message);
         }
     } else {
         console.log('Skipping Supabase upload. SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not found in .env');
