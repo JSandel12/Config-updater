@@ -38,9 +38,12 @@ export async function ensureXray() {
                 }
             }).on('error', reject);
         }
-        const downloadUrl = isWindows 
-            ? 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip'
-            : 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip';
+        let downloadUrl = 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip';
+        if (isWindows) {
+            downloadUrl = 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip';
+        } else if (os.arch() === 'arm64' || os.arch() === 'aarch64') {
+            downloadUrl = 'https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip';
+        }
             
         fetchUrl(downloadUrl);
     });
