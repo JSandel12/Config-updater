@@ -4,28 +4,38 @@ import { execSync } from 'child_process';
 import os from 'os';
 
 export async function fetchConfigs() {
-    console.log('Fetching configs from igareck/vpn-configs-for-russia via git clone...');
+    console.log('Fetching configs from repositories via git clone...');
     try {
-        const tempDir = path.join(os.tmpdir(), 'vpn-configs-for-russia');
-        
-        if (fs.existsSync(tempDir)) {
-            execSync('git pull', { cwd: tempDir, stdio: 'ignore' });
-        } else {
-            execSync('git clone --depth 1 https://github.com/igareck/vpn-configs-for-russia.git ' + tempDir, { stdio: 'ignore' });
-        }
-        
-        const files = getAllFiles(tempDir);
         let allText = '';
-        
-        for (const file of files) {
-            if (file.endsWith('.txt')) {
-                allText += fs.readFileSync(file, 'utf-8') + '\n';
+        const repos = [
+            { url: 'https://github.com/igareck/vpn-configs-for-russia.git', dir: 'vpn-configs-for-russia' },
+            { url: 'https://github.com/flaafix/AetrisVPN-white-list-lite.git', dir: 'AetrisVPN-white-list-lite' }
+        ];
+
+        for (const repo of repos) {
+            const tempDir = path.join(os.tmpdir(), repo.dir);
+            
+            if (fs.existsSync(tempDir)) {
+                execSync('git pull', { cwd: tempDir, stdio: 'ignore' });
+            } else {
+                execSync(`git clone --depth 1 ${repo.url} ${tempDir}`, { stdio: 'ignore' });
+            }
+            
+            const files = getAllFiles(tempDir);
+            
+            for (const file of files) {
+                if (file.endsWith('.txt') || file.endsWith('.md')) {
+                    allText += fs.readFileSync(file, 'utf-8') + '\n';
+                }
             }
         }
         
         // Extract vless links using regex
         const regex = /vless:\/\/[^\s"'<]+[^\s"'<.,]/g;
-        const matches = allText.match(regex) || [];
+        let matches = allText.match(regex) || [];
+        
+        // Strip "AetrisVPN" from the links and replace with "LTE"
+        matches = matches.map(link => link.replace(/AetrisVPN/g, 'LTE'));
         
         const uniqueLinks = [...new Set(matches)];
         
