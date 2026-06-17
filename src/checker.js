@@ -127,10 +127,8 @@ export async function checkLinks(links) {
                 
                 if (res.status === 204) {
                     const latency = Date.now() - startTime;
-                    if (latency <= 1000) {
-                        const remarkText = parsed.remark || 'Unknown Server';
-                        workingLinks.push({ link, latency, remark: remarkText, parsed });
-                    }
+                    const remarkText = parsed.remark || 'Unknown Server';
+                    workingLinks.push({ link, latency, remark: remarkText, parsed });
                 }
             } catch (err) {
                 clearTimeout(timeoutId);
