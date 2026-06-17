@@ -1,10 +1,13 @@
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ensureXray } from './xray-downloader.js';
 import os from 'os';
+import util from 'util';
+
+const execPromise = util.promisify(exec);
 
 function parseVlessUrl(link) {
     const url = new URL(link);
@@ -19,9 +22,10 @@ function parseVlessUrl(link) {
     };
 }
 
-function generateConfig(vlessObj, localPort) {
+function generateConfig(vlessObj, localPort, useMux = false) {
     const outbound = {
         protocol: "vless",
+        ...(useMux ? { mux: { enabled: true, concurrency: 8 } } : {}),
         settings: {
             vnext: [{
                 address: vlessObj.address,
@@ -81,70 +85,56 @@ function generateConfig(vlessObj, localPort) {
 
 export async function checkLinks(links) {
     const xrayExe = await ensureXray();
-    const workingLinks = [];
-    
     const limit = process.env.TEST_LIMIT ? parseInt(process.env.TEST_LIMIT) : links.length;
     const linksToTest = links.slice(0, limit);
 
     const isAndroid = os.arch() === 'arm64' || os.arch() === 'aarch64' || os.platform() === 'android';
     const CONCURRENCY = isAndroid ? 20 : 50;
-    console.log(`Testing ${linksToTest.length} links concurrently (up to ${CONCURRENCY} at a time)...`);
     
-    let completed = 0;
+    // ============================================
+    // PHASE 1: HIGH CONCURRENCY PING TEST
+    // ============================================
+    console.log(`\n[Phase 1] Ping Testing ${linksToTest.length} links (Concurrency: ${CONCURRENCY})...`);
+    const workingLinks = [];
+    let completedPhase1 = 0;
 
-    async function testSingleLink(link, i) {
+    async function pingSingleLink(link, i) {
         try {
             const parsed = parseVlessUrl(link);
-            const localPort = 10000 + Math.floor(Math.random() * 30000); // Random port to prevent conflicts
+            const localPort = 10000 + Math.floor(Math.random() * 30000);
             const config = generateConfig(parsed, localPort);
             
             const configPath = path.join(os.tmpdir(), `xray-${localPort}-${i}.json`);
             fs.writeFileSync(configPath, JSON.stringify(config));
             
-            let xrayErrorLogged = false;
             const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
-            
-            xrayProc.on('error', (err) => { 
-                if (i === 0) console.log(`[DEBUG] Xray spawn error:`, err.message); 
-            });
-            xrayProc.stderr.on('data', (data) => {
-                if (i === 0 && !xrayErrorLogged) {
-                    console.log(`[DEBUG] Xray stderr:`, data.toString());
-                    xrayErrorLogged = true;
-                }
-            });
-            xrayProc.on('exit', (code) => { 
-                if (code !== null && code !== 0 && i === 0) {
-                    console.log(`[DEBUG] Xray exited prematurely with code:`, code); 
-                }
-            });
-            
-            // Wait for xray to bind the local port
             await new Promise(r => setTimeout(r, 1500));
             
             const agent = new HttpsProxyAgent(`http://127.0.0.1:${localPort}`);
             const startTime = Date.now();
             
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 6000);
+            
             try {
                 const res = await axios.get('https://cp.cloudflare.com/generate_204', {
                     httpsAgent: agent,
                     timeout: 5000,
+                    signal: controller.signal,
                     validateStatus: () => true
                 });
+                clearTimeout(timeoutId);
+                
                 if (res.status === 204) {
                     const latency = Date.now() - startTime;
                     if (latency <= 1000) {
                         const remarkText = parsed.remark || 'Unknown Server';
-                        console.log(`\x1b[32m[${i + 1}/${linksToTest.length}] OK\x1b[0m (${latency}ms) - ${remarkText}`);
-                        workingLinks.push({ link, latency, remark: remarkText });
+                        workingLinks.push({ link, latency, remark: remarkText, parsed });
                     }
-                } else if (i === 0) {
-                    console.log(`[DEBUG] Axios returned status: ${res.status}`);
                 }
             } catch (err) {
-                if (i === 0) {
-                    console.log(`[DEBUG] Axios connection error: ${err.message}`);
-                }
+                clearTimeout(timeoutId);
+                // Silently ignore ping failures
             }
             
             xrayProc.kill('SIGTERM');
@@ -153,34 +143,184 @@ export async function checkLinks(links) {
         } catch (err) {
             // Silently ignore parsing errors
         } finally {
-            completed++;
-            if (completed % 25 === 0 || completed === linksToTest.length) {
-                console.log(`Progress: ${completed}/${linksToTest.length} tested. Found ${workingLinks.length} working servers so far...`);
+            completedPhase1++;
+            if (completedPhase1 % 25 === 0 || completedPhase1 === linksToTest.length) {
+                console.log(`Phase 1 Progress: ${completedPhase1}/${linksToTest.length} tested. Found ${workingLinks.length} responsive servers so far...`);
             }
         }
     }
 
-    // Worker pool logic
     let index = 0;
     const workers = Array.from({ length: CONCURRENCY }, async () => {
         while (index < linksToTest.length) {
             const currentIndex = index++;
-            await testSingleLink(linksToTest[currentIndex], currentIndex);
+            await pingSingleLink(linksToTest[currentIndex], currentIndex);
         }
     });
 
     await Promise.all(workers);
+
+    if (workingLinks.length === 0) {
+        console.log(`\nTesting complete. Found 0 working servers.`);
+        return [];
+    }
+
+    // ============================================
+    // PHASE 2: SEQUENTIAL SPEED TEST
+    // ============================================
+    console.log(`\n[Phase 2] Speed Testing ${workingLinks.length} working servers sequentially...`);
+    console.log(`Downloading 5MB payload per server. Timeout is 10 seconds. Please wait...\n`);
     
-    console.log(`\nTesting complete! Found ${workingLinks.length} working servers out of ${linksToTest.length}.`);
-    
-    // Sort by Country/Remark alphabetically first, so countries are grouped together.
-    // If the country is the same, sort the fastest ones to the top.
-    workingLinks.sort((a, b) => {
-        const nameA = a.remark.toUpperCase();
-        const nameB = b.remark.toUpperCase();
-        if (nameA < nameB) return -1;
-        if (nameA > nameB) return 1;
-        return a.latency - b.latency;
+    const finalLinks = [];
+    let completedPhase2 = 0;
+
+    for (const item of workingLinks) {
+        completedPhase2++;
+        let speedMbps = 0;
+        
+        async function runSpeedTest(useMux) {
+            let resultMbps = 0;
+            const localPort = 10000 + Math.floor(Math.random() * 30000);
+            const config = generateConfig(item.parsed, localPort, useMux);
+            const configPath = path.join(os.tmpdir(), `xray-${localPort}-speed-${useMux?'mux':'nomux'}.json`);
+            fs.writeFileSync(configPath, JSON.stringify(config));
+            
+            const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
+            await new Promise(r => setTimeout(r, 1500));
+            
+            try {
+                const isWin = process.platform === 'win32';
+                const devNull = isWin ? 'NUL' : '/dev/null';
+                const curlCmd = isWin ? 'curl.exe' : 'curl';
+                
+                const cmd = `${curlCmd} -x http://127.0.0.1:${localPort} -s -o ${devNull} -w "%{speed_download}" --max-time 10 https://speed.cloudflare.com/__down?bytes=5242880`;
+                
+                let rawOutput = '0';
+                try {
+                    const { stdout } = await execPromise(cmd);
+                    rawOutput = stdout;
+                } catch (execErr) {
+                    if (execErr.stdout) rawOutput = execErr.stdout;
+                }
+                
+                const bytesPerSec = parseFloat(rawOutput.trim()) || 0;
+                if (bytesPerSec > 0) {
+                    resultMbps = (bytesPerSec * 8) / 1000000;
+                }
+            } catch (err) {}
+            
+            xrayProc.kill('SIGTERM');
+            try { fs.unlinkSync(configPath); } catch (e) {}
+            return resultMbps;
+        }
+
+        try {
+            speedMbps = await runSpeedTest(true); // Try with MUX first
+            if (speedMbps < 0.1) {
+                // If Mux failed (server rejected it), retry without Mux
+                speedMbps = await runSpeedTest(false);
+                if (speedMbps > 0) {
+                    console.log(`\x1b[33m[${completedPhase2}/${workingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[33m${speedMbps.toFixed(2).padStart(5)} Mbps (No Mux)\x1b[0m`);
+                } else {
+                    console.log(`\x1b[31m[${completedPhase2}/${workingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[31mFAILED\x1b[0m`);
+                }
+            } else {
+                console.log(`\x1b[32m[${completedPhase2}/${workingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[36m${speedMbps.toFixed(2).padStart(5)} Mbps (Mux)\x1b[0m`);
+            }
+        } catch (err) {
+            console.log(`[Phase 2 Error] ${err.message}`);
+        }
+        
+        finalLinks.push({ ...item, speedMbps });
+    }
+
+    // Filter out any servers slower than 3 Mbps
+    const filteredLinks = finalLinks.filter(w => w.speedMbps >= 3);
+
+    // Sort using a composite score to prioritize highest speed AND lowest ping simultaneously!
+    // Formula: (Speed * 1000) / Ping. Higher score is better.
+    filteredLinks.sort((a, b) => {
+        const scoreA = (a.speedMbps * 1000) / (a.latency || 1);
+        const scoreB = (b.speedMbps * 1000) / (b.latency || 1);
+        return scoreB - scoreA;
     });
-    return workingLinks.map(w => w.link);
+
+    console.log(`\nTesting complete! Filtered down to ${filteredLinks.length} premium servers >= 3 Mbps.`);
+    
+    let liberaCounter = 1;
+
+    // We update the remark to only show the country and the speed metric!
+    
+    // 1. Gather all hostnames for a single batch Geolocation request
+    const hostsToGeolocate = filteredLinks.map(w => new URL(w.link).hostname);
+    const uniqueHosts = [...new Set(hostsToGeolocate)];
+    
+    let geoCache = {};
+    try {
+        console.log(`\nGeolocating ${uniqueHosts.length} servers via ip-api.com...`);
+        // The free batch API accepts up to 100 IPs/domains per POST request
+        const res = await fetch('http://ip-api.com/batch?fields=query,countryCode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(uniqueHosts.slice(0, 100))
+        });
+        
+        if (res.ok) {
+            const geoData = await res.json();
+            geoData.forEach(item => {
+                if (item.countryCode) {
+                    geoCache[item.query] = item.countryCode;
+                }
+            });
+        }
+    } catch (err) {
+        console.log("Geolocation failed. Falling back to default flags.");
+    }
+
+    
+    const finalExportLinks = filteredLinks.map(w => {
+        const url = new URL(w.link);
+        let originalRemark = decodeURIComponent(url.hash.slice(1));
+        
+        // Check if it came from the goida repo
+        let isGoida = false;
+        if (originalRemark.endsWith('-GOIDA')) {
+            isGoida = true;
+            originalRemark = originalRemark.slice(0, -6); // Strip the marker
+        }
+        
+        // Get the dynamically generated flag emoji from the GeoIP lookup
+        let flag = '🌐 ';
+        const cc = geoCache[url.hostname];
+        if (cc) {
+            // Convert 'US' to '🇺🇸' using Regional Indicator Symbol code points
+            flag = String.fromCodePoint(...cc.toUpperCase().split('').map(c => 127397 + c.charCodeAt(0))) + ' ';
+        }
+
+        // Extract existing country string, or override if Goida
+        let country = originalRemark.split(/[,|\[]/)[0].trim();
+        if (isGoida) {
+            country = `${flag}Libera ${liberaCounter++}`;
+        } else {
+            // Some old names have flags embedded. We could just use our new dynamic flag instead!
+            // To keep it simple, we'll prepend our dynamic flag and let the string look like "🇩🇪 Germany"
+            const flagMatch = originalRemark.match(/^\s*([^\x00-\x7F]+)/);
+            const existingFlag = flagMatch ? flagMatch[1].trim() + ' ' : '';
+            // If it already had a flag, use the old string. If not, use our dynamic one!
+            country = existingFlag ? country : `${flag}${country}`;
+        }
+        
+        let speedMetric = "Slow";
+        if (w.speedMbps > 20) {
+            speedMetric = "Fast 🚀";
+        } else if (w.speedMbps >= 5) {
+            speedMetric = "Normal ⚡";
+        }
+        
+        const newRemark = `${country} - ${speedMetric}`;
+        url.hash = `#${encodeURIComponent(newRemark)}`;
+        return url.toString();
+    });
+
+    return finalExportLinks;
 }
