@@ -90,7 +90,7 @@ export async function checkLinks(links) {
 
     const isAndroid = os.arch() === 'arm64' || os.arch() === 'aarch64' || os.platform() === 'android';
     const CONCURRENCY = isAndroid ? 20 : 50;
-    
+
     // ============================================
     // PHASE 1: HIGH CONCURRENCY PING TEST
     // ============================================
@@ -103,19 +103,19 @@ export async function checkLinks(links) {
             const parsed = parseVlessUrl(link);
             const localPort = 10000 + Math.floor(Math.random() * 30000);
             const config = generateConfig(parsed, localPort);
-            
+
             const configPath = path.join(os.tmpdir(), `xray-${localPort}-${i}.json`);
             fs.writeFileSync(configPath, JSON.stringify(config));
-            
+
             const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
             await new Promise(r => setTimeout(r, 1500));
-            
+
             const agent = new HttpsProxyAgent(`http://127.0.0.1:${localPort}`);
             const startTime = Date.now();
-            
+
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 6000);
-            
+
             try {
                 const res = await axios.get('https://cp.cloudflare.com/generate_204', {
                     httpsAgent: agent,
@@ -124,7 +124,7 @@ export async function checkLinks(links) {
                     validateStatus: () => true
                 });
                 clearTimeout(timeoutId);
-                
+
                 if (res.status === 204) {
                     const latency = Date.now() - startTime;
                     if (latency <= 1000) {
@@ -136,10 +136,10 @@ export async function checkLinks(links) {
                 clearTimeout(timeoutId);
                 // Silently ignore ping failures
             }
-            
+
             xrayProc.kill('SIGTERM');
-            try { fs.unlinkSync(configPath); } catch (e) {}
-            
+            try { fs.unlinkSync(configPath); } catch (e) { }
+
         } catch (err) {
             // Silently ignore parsing errors
         } finally {
@@ -170,10 +170,10 @@ export async function checkLinks(links) {
     // ============================================
     console.log(`\n[Phase 2] Speed Testing ${workingLinks.length} working servers sequentially...`);
     console.log(`Downloading 5MB payload per server. Timeout is 10 seconds. Please wait...\n`);
-    
+
     const finalLinks = [];
     let completedPhase2 = 0;
-    
+
     let abortPhase2 = false;
     const sigintHandler = () => {
         console.log('\n[!] Ctrl+C detected! Stopping speed tests early and proceeding to export...');
@@ -185,24 +185,24 @@ export async function checkLinks(links) {
         if (abortPhase2) break;
         completedPhase2++;
         let speedMbps = 0;
-        
+
         async function runSpeedTest(useMux) {
             let resultMbps = 0;
             const localPort = 10000 + Math.floor(Math.random() * 30000);
             const config = generateConfig(item.parsed, localPort, useMux);
-            const configPath = path.join(os.tmpdir(), `xray-${localPort}-speed-${useMux?'mux':'nomux'}.json`);
+            const configPath = path.join(os.tmpdir(), `xray-${localPort}-speed-${useMux ? 'mux' : 'nomux'}.json`);
             fs.writeFileSync(configPath, JSON.stringify(config));
-            
+
             const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
             await new Promise(r => setTimeout(r, 1500));
-            
+
             try {
                 const isWin = process.platform === 'win32';
                 const devNull = isWin ? 'NUL' : '/dev/null';
                 const curlCmd = isWin ? 'curl.exe' : 'curl';
-                
+
                 const cmd = `${curlCmd} -x http://127.0.0.1:${localPort} -s -o ${devNull} -w "%{speed_download}" --max-time 10 https://speed.cloudflare.com/__down?bytes=5242880`;
-                
+
                 let rawOutput = '0';
                 try {
                     const { stdout } = await execPromise(cmd);
@@ -210,15 +210,15 @@ export async function checkLinks(links) {
                 } catch (execErr) {
                     if (execErr.stdout) rawOutput = execErr.stdout;
                 }
-                
+
                 const bytesPerSec = parseFloat(rawOutput.trim()) || 0;
                 if (bytesPerSec > 0) {
                     resultMbps = (bytesPerSec * 8) / 1000000;
                 }
-            } catch (err) {}
-            
+            } catch (err) { }
+
             xrayProc.kill('SIGTERM');
-            try { fs.unlinkSync(configPath); } catch (e) {}
+            try { fs.unlinkSync(configPath); } catch (e) { }
             return resultMbps;
         }
 
@@ -238,10 +238,10 @@ export async function checkLinks(links) {
         } catch (err) {
             console.log(`[Phase 2 Error] ${err.message}`);
         }
-        
+
         finalLinks.push({ ...item, speedMbps });
     }
-    
+
     process.removeListener('SIGINT', sigintHandler);
 
     // Filter out any servers slower than 3 Mbps
@@ -250,7 +250,7 @@ export async function checkLinks(links) {
     // 1. Gather all hostnames for a single batch Geolocation request
     const hostsToGeolocate = filteredLinks.map(w => new URL(w.link).hostname);
     const uniqueHosts = [...new Set(hostsToGeolocate)];
-    
+
     let geoCache = {};
     try {
         console.log(`\nGeolocating ${uniqueHosts.length} servers via ip-api.com...`);
@@ -260,7 +260,7 @@ export async function checkLinks(links) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(uniqueHosts.slice(0, 100))
         });
-        
+
         if (res.ok) {
             const geoData = await res.json();
             geoData.forEach(item => {
@@ -275,22 +275,22 @@ export async function checkLinks(links) {
 
     function getRegionTier(countryCode) {
         if (!countryCode || countryCode === 'RU') return 99; // Bottom tier (no bonus)
-        
+
         // Tier 1: EU and close European/Eurasian countries (Always top priority)
         const tier1 = [
-            'DE', 'FR', 'GB', 'NL', 'IT', 'ES', 'FI', 'EE', 'LV', 'LT', 
-            'PL', 'SE', 'NO', 'DK', 'BE', 'CH', 'AT', 'CZ', 'SK', 'HU', 
+            'DE', 'FR', 'GB', 'NL', 'IT', 'ES', 'FI', 'EE', 'LV', 'LT',
+            'PL', 'SE', 'NO', 'DK', 'BE', 'CH', 'AT', 'CZ', 'SK', 'HU',
             'RO', 'BG', 'IE', 'PT', 'GR', 'BY', 'UA', 'KZ', 'GE', 'AZ', 'MD'
         ];
-        
+
         // Tier 2: Other Asian/Eurasian regions moderately close
         const tier2 = [
             'TR', 'RS', 'AM', 'TM', 'UZ', 'TJ', 'KG', 'MN', 'CN', 'JP', 'KR', 'KP'
         ];
-        
+
         if (tier1.includes(countryCode)) return 1;
         if (tier2.includes(countryCode)) return 2;
-        
+
         return 99; // Tier 99 for everything else (Canada, US, etc.)
     }
 
@@ -299,15 +299,15 @@ export async function checkLinks(links) {
     filteredLinks.sort((a, b) => {
         const hostA = new URL(a.link).hostname;
         const hostB = new URL(b.link).hostname;
-        
+
         const tierA = getRegionTier(geoCache[hostA]);
         const tierB = getRegionTier(geoCache[hostB]);
-        
+
         // 1. Strict geographic priority (Tier 1 > Tier 2 > Tier 99)
         if (tierA !== tierB) {
             return tierA - tierB;
         }
-        
+
         // 2. If same tier, sort by speed and ping performance
         const scoreA = (a.speedMbps * 1000) / (a.latency || 1);
         const scoreB = (b.speedMbps * 1000) / (b.latency || 1);
@@ -327,23 +327,23 @@ export async function checkLinks(links) {
     });
 
     console.log(`\nTesting complete! Filtered down to ${filteredLinks.length} premium servers >= 3 Mbps.`);
-    
+
     let liberaCounter = 1;
 
     // We update the remark to only show the country and the speed metric!
 
-    
+
     const finalExportLinks = filteredLinks.map(w => {
         const url = new URL(w.link);
         let originalRemark = decodeURIComponent(url.hash.slice(1));
-        
+
         // Check if it came from the goida repo
         let isGoida = false;
         if (originalRemark.endsWith('-GOIDA')) {
             isGoida = true;
             originalRemark = originalRemark.slice(0, -6); // Strip the marker
         }
-        
+
         // Get the dynamically generated flag emoji from the GeoIP lookup
         let flag = '🌐 ';
         const cc = geoCache[url.hostname];
@@ -364,14 +364,14 @@ export async function checkLinks(links) {
             // If it already had a flag, use the old string. If not, use our dynamic one!
             country = existingFlag ? country : `${flag}${country}`;
         }
-        
+
         let speedMetric = "Slow";
         if (w.speedMbps > 20) {
             speedMetric = "Fast 🚀";
         } else if (w.speedMbps >= 5) {
             speedMetric = "Normal ⚡";
         }
-        
+
         const newRemark = `${country} - ${speedMetric}`;
         url.hash = `#${encodeURIComponent(newRemark)}`;
         return url.toString();
