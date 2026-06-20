@@ -127,8 +127,10 @@ export async function checkLinks(links) {
                 
                 if (res.status === 204) {
                     const latency = Date.now() - startTime;
-                    const remarkText = parsed.remark || 'Unknown Server';
-                    workingLinks.push({ link, latency, remark: remarkText, parsed });
+                    if (latency <= 1000) {
+                        const remarkText = parsed.remark || 'Unknown Server';
+                        workingLinks.push({ link, latency, remark: remarkText, parsed });
+                    }
                 }
             } catch (err) {
                 clearTimeout(timeoutId);
@@ -171,8 +173,16 @@ export async function checkLinks(links) {
     
     const finalLinks = [];
     let completedPhase2 = 0;
+    
+    let abortPhase2 = false;
+    const sigintHandler = () => {
+        console.log('\n[!] Ctrl+C detected! Stopping speed tests early and proceeding to export...');
+        abortPhase2 = true;
+    };
+    process.on('SIGINT', sigintHandler);
 
     for (const item of workingLinks) {
+        if (abortPhase2) break;
         completedPhase2++;
         let speedMbps = 0;
         
@@ -231,24 +241,12 @@ export async function checkLinks(links) {
         
         finalLinks.push({ ...item, speedMbps });
     }
+    
+    process.removeListener('SIGINT', sigintHandler);
 
     // Filter out any servers slower than 3 Mbps
-    const filteredLinks = finalLinks.filter(w => w.speedMbps >= 3);
+    let filteredLinks = finalLinks.filter(w => w.speedMbps >= 3);
 
-    // Sort using a composite score to prioritize highest speed AND lowest ping simultaneously!
-    // Formula: (Speed * 1000) / Ping. Higher score is better.
-    filteredLinks.sort((a, b) => {
-        const scoreA = (a.speedMbps * 1000) / (a.latency || 1);
-        const scoreB = (b.speedMbps * 1000) / (b.latency || 1);
-        return scoreB - scoreA;
-    });
-
-    console.log(`\nTesting complete! Filtered down to ${filteredLinks.length} premium servers >= 3 Mbps.`);
-    
-    let liberaCounter = 1;
-
-    // We update the remark to only show the country and the speed metric!
-    
     // 1. Gather all hostnames for a single batch Geolocation request
     const hostsToGeolocate = filteredLinks.map(w => new URL(w.link).hostname);
     const uniqueHosts = [...new Set(hostsToGeolocate)];
@@ -274,6 +272,65 @@ export async function checkLinks(links) {
     } catch (err) {
         console.log("Geolocation failed. Falling back to default flags.");
     }
+
+    function getRegionTier(countryCode) {
+        if (!countryCode || countryCode === 'RU') return 99; // Bottom tier (no bonus)
+        
+        // Tier 1: EU and close European/Eurasian countries (Always top priority)
+        const tier1 = [
+            'DE', 'FR', 'GB', 'NL', 'IT', 'ES', 'FI', 'EE', 'LV', 'LT', 
+            'PL', 'SE', 'NO', 'DK', 'BE', 'CH', 'AT', 'CZ', 'SK', 'HU', 
+            'RO', 'BG', 'IE', 'PT', 'GR', 'BY', 'UA', 'KZ', 'GE', 'AZ', 'MD'
+        ];
+        
+        // Tier 2: Other Asian/Eurasian regions moderately close
+        const tier2 = [
+            'TR', 'RS', 'AM', 'TM', 'UZ', 'TJ', 'KG', 'MN', 'CN', 'JP', 'KR', 'KP'
+        ];
+        
+        if (tier1.includes(countryCode)) return 1;
+        if (tier2.includes(countryCode)) return 2;
+        
+        return 99; // Tier 99 for everything else (Canada, US, etc.)
+    }
+
+    // Sort using strict geographic tiers first, then composite score within the tier!
+    // Formula: (Speed * 1000) / Ping. Higher score is better.
+    filteredLinks.sort((a, b) => {
+        const hostA = new URL(a.link).hostname;
+        const hostB = new URL(b.link).hostname;
+        
+        const tierA = getRegionTier(geoCache[hostA]);
+        const tierB = getRegionTier(geoCache[hostB]);
+        
+        // 1. Strict geographic priority (Tier 1 > Tier 2 > Tier 99)
+        if (tierA !== tierB) {
+            return tierA - tierB;
+        }
+        
+        // 2. If same tier, sort by speed and ping performance
+        const scoreA = (a.speedMbps * 1000) / (a.latency || 1);
+        const scoreB = (b.speedMbps * 1000) / (b.latency || 1);
+        return scoreB - scoreA;
+    });
+
+    // Limit North American servers to max of 2
+    let naCount = 0;
+    filteredLinks = filteredLinks.filter(link => {
+        const host = new URL(link.link).hostname;
+        const cc = geoCache[host];
+        if (cc === 'US' || cc === 'CA') {
+            naCount++;
+            return naCount <= 2;
+        }
+        return true;
+    });
+
+    console.log(`\nTesting complete! Filtered down to ${filteredLinks.length} premium servers >= 3 Mbps.`);
+    
+    let liberaCounter = 1;
+
+    // We update the remark to only show the country and the speed metric!
 
     
     const finalExportLinks = filteredLinks.map(w => {
