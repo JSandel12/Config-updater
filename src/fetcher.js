@@ -2,11 +2,35 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import os from 'os';
+import axios from 'axios';
+import https from 'https';
 
 export async function fetchConfigs() {
-    console.log('Fetching configs from repositories via git clone...');
+    console.log('Fetching existing active configs from Supabase and raw configs from repositories...');
     try {
         let allText = '';
+        
+        // 1. Fetch existing saved working links from Supabase first
+        if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+            console.log('Fetching previously saved working links from Supabase to re-test them...');
+            try {
+                const url = process.env.SUPABASE_URL;
+                const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+                const headers = { 'apikey': key, 'Authorization': `Bearer ${key}` };
+                const httpsAgent = new https.Agent({ family: 4 }); // Force IPv4
+                
+                const res = await axios.get(`${url}/rest/v1/working_links?select=link`, { headers, timeout: 10000, httpsAgent });
+                if (res.data && Array.isArray(res.data)) {
+                    const existingLinks = res.data.map(row => row.link).join('\n');
+                    allText += existingLinks + '\n';
+                    console.log(`Successfully loaded ${res.data.length} previously saved links.`);
+                }
+            } catch (err) {
+                console.log('[Warning] Failed to fetch existing links from Supabase. Skipping...');
+            }
+        }
+        
+        // 2. Fetch from Github repos
         const repos = [
             { url: 'https://github.com/flaafix/AetrisVPN-white-list-lite.git', dir: 'AetrisVPN-white-list-lite' },
             { url: 'https://github.com/igareck/vpn-configs-for-russia.git', dir: 'vpn-configs-for-russia' },
