@@ -314,11 +314,21 @@ export async function checkLinks(links) {
         return scoreB - scoreA;
     });
 
-    // Limit North American servers to max of 2
+    // Filter out Russian servers and limit North American servers to max of 2
     let naCount = 0;
     filteredLinks = filteredLinks.filter(link => {
         const host = new URL(link.link).hostname;
         const cc = geoCache[host];
+        
+        // Drop Russian servers based on GeoIP
+        if (cc === 'RU') return false;
+        
+        // Drop Russian servers based on remark/flag
+        const originalRemark = decodeURIComponent(new URL(link.link).hash.slice(1));
+        if (originalRemark.includes('🇷🇺') || originalRemark.toLowerCase().includes('russia')) {
+            return false;
+        }
+
         if (cc === 'US' || cc === 'CA') {
             naCount++;
             return naCount <= 2;
