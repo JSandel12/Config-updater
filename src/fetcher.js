@@ -106,6 +106,23 @@ export async function fetchConfigs() {
         const regex = /vless:\/\/[^\s"'<]+[^\s"'<.,]/g;
         let matches = allText.match(regex) || [];
         
+        // Filter to strictly keep ONLY VLESS + TCP/gRPC + REALITY
+        matches = matches.filter(link => {
+            try {
+                if (!link.startsWith('vless://')) return false;
+                const url = new URL(link);
+                const security = url.searchParams.get('security');
+                const type = url.searchParams.get('type');
+                
+                if (security !== 'reality') return false;
+                if (type !== 'tcp' && type !== 'grpc') return false;
+                
+                return true;
+            } catch (e) {
+                return false;
+            }
+        });
+        
         // Strip "AetrisVPN" from the links and replace with "LTE"
         matches = matches.map(link => link.replace(/AetrisVPN/g, 'LTE'));
         
