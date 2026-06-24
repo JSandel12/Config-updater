@@ -362,6 +362,9 @@ export async function checkLinks(links) {
             flag = String.fromCodePoint(...cc.toUpperCase().split('').map(c => 127397 + c.charCodeAt(0))) + ' ';
         }
 
+        // Strip any previously appended speed metrics from surviving links
+        originalRemark = originalRemark.replace(/\s*-\s*(Fast 🚀|Normal ⚡|Slow 🐢|Slow).*$/i, '').trim();
+
         // Extract existing country string, or override if Goida
         let country = originalRemark.split(/[,|\[]/)[0].trim();
         if (isGoida) {
