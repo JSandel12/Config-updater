@@ -165,10 +165,17 @@ export async function checkLinks(links) {
         return [];
     }
 
+    // Sort by ping latency and keep only the top 100 best servers for Phase 2
+    workingLinks.sort((a, b) => a.latency - b.latency);
+    if (workingLinks.length > 100) {
+        console.log(`\nFound ${workingLinks.length} responsive servers. Slicing down to the Top 100 fastest pings for Phase 2...`);
+        workingLinks.splice(100);
+    }
+
     // ============================================
     // PHASE 2: SEQUENTIAL SPEED TEST
     // ============================================
-    console.log(`\n[Phase 2] Speed Testing ${workingLinks.length} working servers sequentially...`);
+    console.log(`\n[Phase 2] Speed Testing ${workingLinks.length} top-tier servers sequentially...`);
     console.log(`Downloading 5MB payload per server. Timeout is 10 seconds. Please wait...\n`);
 
     const finalLinks = [];
