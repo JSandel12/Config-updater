@@ -36,6 +36,22 @@ export async function updateHapp(workingLinks) {
         const httpsAgent = new https.Agent({ family: 4 });
         
         try {
+            console.log(`[DEBUG] Fetching current DB links for backup...`);
+            try {
+                const getRes = await axios.get(`${url}/rest/v1/working_links?select=*`, { headers, timeout: 15000, httpsAgent });
+                if (getRes.data && getRes.data.length > 0) {
+                    fs.writeFileSync(path.join(process.cwd(), 'backup_links.json'), JSON.stringify(getRes.data, null, 2));
+                    console.log(`[DEBUG] Saved ${getRes.data.length} links to backup_links.json`);
+                }
+            } catch (err) {
+                console.log(`[Warning] Failed to backup current links: ${err.message}`);
+            }
+
+            if (workingLinks.length < 5) {
+                console.error(`\n[CRITICAL] Only ${workingLinks.length} working links found! Aborting DB update to prevent breaking clients.`);
+                return;
+            }
+
             console.log(`[DEBUG] Attempting to clear old links from Supabase (${url})...`);
             // First clear the table (Delete all rows where id is greater than 0, or just not null)
             const deleteRes = await axios.delete(`${url}/rest/v1/working_links?id=gt.0`, { headers, timeout: 15000, httpsAgent });

@@ -2,8 +2,8 @@ name: VPN Auto Updater
 
 on:
   schedule:
-    # Runs every hour at 17 minutes past to avoid GitHub server overload
-    - cron: '17 * * * *'
+    # Runs every 3 hours at the top of the hour
+    - cron: '0 */3 * * *'
   workflow_dispatch: # Allows you to manually trigger it from GitHub UI
 
 jobs:
