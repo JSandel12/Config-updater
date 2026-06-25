@@ -19,11 +19,16 @@ export async function fetchConfigs() {
                 const headers = { 'apikey': key, 'Authorization': `Bearer ${key}` };
                 const httpsAgent = new https.Agent({ family: 4 }); // Force IPv4
                 
-                const res = await axios.get(`${url}/rest/v1/working_links?select=link`, { headers, timeout: 10000, httpsAgent });
+                const res = await axios.get(`${url}/rest/v1/working_links?select=*`, { headers, timeout: 10000, httpsAgent });
                 if (res.data && Array.isArray(res.data)) {
+                    // Save the backup first
+                    fs.writeFileSync(path.join(process.cwd(), 'backup_links.json'), JSON.stringify(res.data, null, 2));
+                    console.log(`[DEBUG] Saved ${res.data.length} links to backup_links.json before testing.`);
+
+                    // Extract just the links for testing
                     const existingLinks = res.data.map(row => row.link).join('\n');
                     allText += existingLinks + '\n';
-                    console.log(`Successfully loaded ${res.data.length} previously saved links.`);
+                    console.log(`Successfully loaded ${res.data.length} previously saved links into test queue.`);
                 }
             } catch (err) {
                 console.log('[Warning] Failed to fetch existing links from Supabase. Skipping...');
