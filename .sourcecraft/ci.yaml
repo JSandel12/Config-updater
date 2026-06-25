@@ -1,10 +1,10 @@
-on:
-  schedule:
-    - cron: '0 */3 * * *'
-  push:
-    - workflows: ["VPN-Checker-Workflow"]
-      filter:
-        branches: ["main"]
+# on:
+#   schedule:
+#     - cron: '0 */3 * * *'
+#   push:
+#     - workflows: ["VPN-Checker-Workflow"]
+#       filter:
+#         branches: ["main"]
 
 workflows:
   "VPN-Checker-Workflow":
