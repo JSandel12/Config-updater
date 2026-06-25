@@ -1,0 +1,22 @@
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  push:
+    - workflows: ["VPN-Checker-Workflow"]
+      filter:
+        branches: ["main"]
+
+workflows:
+  "VPN-Checker-Workflow":
+    tasks:
+      - name: "Run-Checker-Task"
+        cubes:
+          - name: "execute-node"
+            image: "node:22"
+            env:
+              SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+              SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+              TEST_LIMIT: "2000"
+            script:
+              - npm install
+              - node index.js
