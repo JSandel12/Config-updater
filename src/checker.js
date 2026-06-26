@@ -165,17 +165,71 @@ export async function checkLinks(links) {
         return [];
     }
 
-    // Sort by ping latency and keep only the top 100 best servers for Phase 2
-    workingLinks.sort((a, b) => a.latency - b.latency);
-    if (workingLinks.length > 100) {
-        console.log(`\nFound ${workingLinks.length} responsive servers. Slicing down to the Top 100 fastest pings for Phase 2...`);
-        workingLinks.splice(100);
+    // ============================================
+    // PRE-PHASE 2: GEOLOCATION & SUBNET FILTERING
+    // ============================================
+    const hostsToGeolocate = workingLinks.map(w => new URL(w.link).hostname);
+    const uniqueHosts = [...new Set(hostsToGeolocate)];
+    let geoCache = {};
+
+    try {
+        console.log(`\nGeolocating ${uniqueHosts.length} unique hosts via ip-api.com...`);
+        for (let i = 0; i < uniqueHosts.length; i += 100) {
+            const chunk = uniqueHosts.slice(i, i + 100);
+            const res = await fetch('http://ip-api.com/batch?fields=query,countryCode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(chunk)
+            });
+            if (res.ok) {
+                const geoData = await res.json();
+                geoData.forEach(item => {
+                    if (item.countryCode) geoCache[item.query] = item.countryCode;
+                });
+            }
+        }
+    } catch (err) {
+        console.log("Geolocation failed. Falling back to default flags.");
     }
+
+    // Apply the filters to workingLinks before we waste time on Phase 2
+    let naCount = 0;
+    let clusterCounts = {};
+
+    const filteredWorkingLinks = workingLinks.filter(linkObj => {
+        const host = new URL(linkObj.link).hostname;
+        const cc = geoCache[host];
+
+        if (cc === 'RU') return false;
+
+        let clusterId = host;
+        const ipv4Match = host.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+        if (ipv4Match) {
+            clusterId = ipv4Match[1];
+        }
+
+        // Allow up to 15 nodes per subnet into Phase 2 for speed testing to ensure redundancy
+        clusterCounts[clusterId] = (clusterCounts[clusterId] || 0) + 1;
+        if (clusterCounts[clusterId] > 15) return false;
+
+        const originalRemark = decodeURIComponent(new URL(linkObj.link).hash.slice(1));
+        if (originalRemark.includes('🇷🇺') || originalRemark.toLowerCase().includes('russia')) {
+            return false;
+        }
+
+        if (cc === 'US' || cc === 'CA') {
+            naCount++;
+            return naCount <= 2;
+        }
+        return true;
+    });
+
+    console.log(`Dropped ${workingLinks.length - filteredWorkingLinks.length} redundant or blocked servers. Entering Phase 2 with ${filteredWorkingLinks.length} premium servers.`);
 
     // ============================================
     // PHASE 2: SEQUENTIAL SPEED TEST
     // ============================================
-    console.log(`\n[Phase 2] Speed Testing ${workingLinks.length} top-tier servers sequentially...`);
+    console.log(`\n[Phase 2] Speed Testing ${filteredWorkingLinks.length} working servers sequentially...`);
     console.log(`Downloading 5MB payload per server. Timeout is 10 seconds. Please wait...\n`);
 
     const finalLinks = [];
@@ -188,97 +242,71 @@ export async function checkLinks(links) {
     };
     process.on('SIGINT', sigintHandler);
 
-    for (const item of workingLinks) {
+    for (const item of filteredWorkingLinks) {
         if (abortPhase2) break;
         completedPhase2++;
         let speedMbps = 0;
 
-        async function runSpeedTest(useMux) {
-            let resultMbps = 0;
-            const localPort = 10000 + Math.floor(Math.random() * 30000);
-            const config = generateConfig(item.parsed, localPort, useMux);
-            const configPath = path.join(os.tmpdir(), `xray-${localPort}-speed-${useMux ? 'mux' : 'nomux'}.json`);
-            fs.writeFileSync(configPath, JSON.stringify(config));
+            async function runSpeedTest(useMux) {
+                let resultMbps = 0;
+                // Generate a random port between 10000 and 40000 to avoid collisions
+                const localPort = 10000 + Math.floor(Math.random() * 30000);
+                const config = generateConfig(item.parsed, localPort, useMux);
+                const configPath = path.join(os.tmpdir(), `xray-${localPort}-speed-${useMux ? 'mux' : 'nomux'}.json`);
+                fs.writeFileSync(configPath, JSON.stringify(config));
 
-            const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
-            await new Promise(r => setTimeout(r, 1500));
+                const xrayProc = spawn(xrayExe, ['run', '-c', configPath]);
+                await new Promise(r => setTimeout(r, 1500));
+
+                try {
+                    const isWin = process.platform === 'win32';
+                    const devNull = isWin ? 'NUL' : '/dev/null';
+                    const curlCmd = isWin ? 'curl.exe' : 'curl';
+
+                    const cmd = `${curlCmd} -x http://127.0.0.1:${localPort} -s -o ${devNull} -w "%{speed_download}" --max-time 10 https://speed.cloudflare.com/__down?bytes=5242880`;
+
+                    let rawOutput = '0';
+                    try {
+                        const { stdout } = await execPromise(cmd);
+                        rawOutput = stdout;
+                    } catch (execErr) {
+                        if (execErr.stdout) rawOutput = execErr.stdout;
+                    }
+
+                    const bytesPerSec = parseFloat(rawOutput.trim()) || 0;
+                    if (bytesPerSec > 0) {
+                        resultMbps = (bytesPerSec * 8) / 1000000;
+                    }
+                } catch (err) { }
+
+                xrayProc.kill('SIGTERM');
+                try { fs.unlinkSync(configPath); } catch (e) { }
+                return resultMbps;
+            }
 
             try {
-                const isWin = process.platform === 'win32';
-                const devNull = isWin ? 'NUL' : '/dev/null';
-                const curlCmd = isWin ? 'curl.exe' : 'curl';
-
-                const cmd = `${curlCmd} -x http://127.0.0.1:${localPort} -s -o ${devNull} -w "%{speed_download}" --max-time 10 https://speed.cloudflare.com/__down?bytes=5242880`;
-
-                let rawOutput = '0';
-                try {
-                    const { stdout } = await execPromise(cmd);
-                    rawOutput = stdout;
-                } catch (execErr) {
-                    if (execErr.stdout) rawOutput = execErr.stdout;
-                }
-
-                const bytesPerSec = parseFloat(rawOutput.trim()) || 0;
-                if (bytesPerSec > 0) {
-                    resultMbps = (bytesPerSec * 8) / 1000000;
-                }
-            } catch (err) { }
-
-            xrayProc.kill('SIGTERM');
-            try { fs.unlinkSync(configPath); } catch (e) { }
-            return resultMbps;
-        }
-
-        try {
-            speedMbps = await runSpeedTest(true); // Try with MUX first
-            if (speedMbps < 0.1) {
-                // If Mux failed (server rejected it), retry without Mux
-                speedMbps = await runSpeedTest(false);
-                if (speedMbps > 0) {
-                    console.log(`\x1b[33m[${completedPhase2}/${workingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[33m${speedMbps.toFixed(2).padStart(5)} Mbps (No Mux)\x1b[0m`);
+                speedMbps = await runSpeedTest(true); // Try with MUX first
+                if (speedMbps < 0.1) {
+                    speedMbps = await runSpeedTest(false);
+                    if (speedMbps > 0) {
+                        console.log(`\x1b[33m[${completedPhase2}/${filteredWorkingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[33m${speedMbps.toFixed(2).padStart(5)} Mbps (No Mux)\x1b[0m`);
+                    } else {
+                        console.log(`\x1b[31m[${completedPhase2}/${filteredWorkingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[31mFAILED\x1b[0m`);
+                    }
                 } else {
-                    console.log(`\x1b[31m[${completedPhase2}/${workingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[31mFAILED\x1b[0m`);
+                    console.log(`\x1b[32m[${completedPhase2}/${filteredWorkingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[36m${speedMbps.toFixed(2).padStart(5)} Mbps (Mux)\x1b[0m`);
                 }
-            } else {
-                console.log(`\x1b[32m[${completedPhase2}/${workingLinks.length}]\x1b[0m ${item.remark.padEnd(25)} | Ping: ${item.latency.toString().padEnd(5)}ms | Speed: \x1b[36m${speedMbps.toFixed(2).padStart(5)} Mbps (Mux)\x1b[0m`);
+            } catch (err) {
+                console.log(`[Phase 2 Error] ${err.message}`);
             }
-        } catch (err) {
-            console.log(`[Phase 2 Error] ${err.message}`);
-        }
 
-        finalLinks.push({ ...item, speedMbps });
+            finalLinks.push({ ...item, speedMbps });
     }
 
     process.removeListener('SIGINT', sigintHandler);
 
     // Filter out any servers slower than 3 Mbps
     let filteredLinks = finalLinks.filter(w => w.speedMbps >= 3);
-
-    // 1. Gather all hostnames for a single batch Geolocation request
-    const hostsToGeolocate = filteredLinks.map(w => new URL(w.link).hostname);
-    const uniqueHosts = [...new Set(hostsToGeolocate)];
-
-    let geoCache = {};
-    try {
-        console.log(`\nGeolocating ${uniqueHosts.length} servers via ip-api.com...`);
-        // The free batch API accepts up to 100 IPs/domains per POST request
-        const res = await fetch('http://ip-api.com/batch?fields=query,countryCode', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(uniqueHosts.slice(0, 100))
-        });
-
-        if (res.ok) {
-            const geoData = await res.json();
-            geoData.forEach(item => {
-                if (item.countryCode) {
-                    geoCache[item.query] = item.countryCode;
-                }
-            });
-        }
-    } catch (err) {
-        console.log("Geolocation failed. Falling back to default flags.");
-    }
 
     function getRegionTier(countryCode) {
         if (!countryCode || countryCode === 'RU') return 99; // Bottom tier (no bonus)
@@ -321,24 +349,18 @@ export async function checkLinks(links) {
         return scoreB - scoreA;
     });
 
-    // Filter out Russian servers and limit North American servers to max of 2
-    let naCount = 0;
+    // NOW that they are perfectly sorted by geographic tier and speed,
+    // we apply the strict limit of 3 servers per subnet farm to output the final list!
+    let finalClusterCounts = {};
     filteredLinks = filteredLinks.filter(link => {
         const host = new URL(link.link).hostname;
-        const cc = geoCache[host];
+        let clusterId = host;
+        const ipv4Match = host.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+        if (ipv4Match) clusterId = ipv4Match[1];
 
-        // Drop Russian servers based on GeoIP
-        if (cc === 'RU') return false;
-
-        // Drop Russian servers based on remark/flag
-        const originalRemark = decodeURIComponent(new URL(link.link).hash.slice(1));
-        if (originalRemark.includes('🇷🇺') || originalRemark.toLowerCase().includes('russia')) {
+        finalClusterCounts[clusterId] = (finalClusterCounts[clusterId] || 0) + 1;
+        if (finalClusterCounts[clusterId] > 3) {
             return false;
-        }
-
-        if (cc === 'US' || cc === 'CA') {
-            naCount++;
-            return naCount <= 2;
         }
         return true;
     });
